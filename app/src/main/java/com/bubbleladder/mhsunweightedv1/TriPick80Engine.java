@@ -6,6 +6,7 @@ import java.util.*;
  * 4개 조합 중 1개를 제외하고 나머지 3개를 추천하는 '삼치기' 80% 목표 엔진.
  *
  * 중요한 원칙
+ * - 학습/규칙선택 입력은 최신 최대 30회로 고정한다. 31회 이전은 현재 추천 계산에서 제외한다.
  * - 80%라는 숫자를 임의로 만들지 않는다.
  * - 각 과거 시점에서 그 시점 이후 결과를 가린 채 어떤 조합을 제외했을지 walk-forward로 재현한다.
  * - 후보 선택 구간(pre-holdout)과 마지막 holdout을 분리한다.
@@ -19,10 +20,11 @@ public final class TriPick80Engine {
 
     public static final double TARGET = 0.80;
     private static final double PRE_BLOCK_FLOOR = 0.75;
-    private static final int WARMUP = 20;
-    private static final int MAX_VALIDATION = 80;
-    private static final int MIN_PRE = 20;
-    private static final int MIN_HOLD = 12;
+    private static final int LEARNING_WINDOW = 30;
+    private static final int WARMUP = 8;
+    private static final int MAX_VALIDATION = 22; // 최근30 내부에서 warmup 8회 이후만 재현
+    private static final int MIN_PRE = 10;
+    private static final int MIN_HOLD = 6;
 
     public static final class Result {
         public boolean certified;
@@ -215,22 +217,26 @@ public final class TriPick80Engine {
     }
 
     private static int safeExclude(Strategy s,List<FlowCore.Result> a,int end){
-        try{int x=s.x.exclude(a,end);return validCombo(x)?x:recentRare(a,end,Math.min(12,end));}
-        catch(Throwable t){return recentRare(a,end,Math.min(12,end));}
+        // 이중 안전장치: 호출자가 더 긴 history를 넘겨도 각 전략에는 직전 최대 30회만 보인다.
+        int from=Math.max(0,end-LEARNING_WINDOW);
+        List<FlowCore.Result> view=(from==0)?a:new ArrayList<>(a.subList(from,end));
+        int e=view.size();
+        try{int x=s.x.exclude(view,e);return validCombo(x)?x:recentRare(view,e,Math.min(12,e));}
+        catch(Throwable t){return recentRare(view,e,Math.min(12,e));}
     }
 
     private static List<Strategy> strategies(){
         List<Strategy> s=new ArrayList<>();
         // 80%가 안 나오면 짧은/중간/긴 구간을 모두 훑는다. 가중치는 쓰지 않는다.
-        for(int w:new int[]{4,5,6,7,8,9,10,12,14,16,20,24,30,40,50,60,80,100,120}){final int q=w;s.add(new Strategy("Recent","최근희소-"+w,(a,e)->recentRare(a,e,q)));}
+        for(int w:new int[]{4,5,6,7,8,9,10,12,14,16,20,24,30}){final int q=w;s.add(new Strategy("Recent","최근희소-"+w,(a,e)->recentRare(a,e,q)));}
         for(int o:new int[]{1,2,3,4,5,6}){final int q=o;s.add(new Strategy("Markov","ComboMarkov-o"+o,(a,e)->markovRare(a,e,q)));}
-        for(int w:new int[]{12,16,20,24,30,40,50,60,80,100,120}){final int q=w;s.add(new Strategy("Transition","전이희소-"+w,(a,e)->transitionRare(a,e,q)));}
+        for(int w:new int[]{12,16,20,24,30}){final int q=w;s.add(new Strategy("Transition","전이희소-"+w,(a,e)->transitionRare(a,e,q)));}
         for(int n=3;n<=10;n++)for(int hd:new int[]{0,1,2}){final int q=n,h=hd;s.add(new Strategy("Shape","ShapeCombo-"+n+"-H"+hd,(a,e)->shapeRare(a,e,q,h)));}
         for(int n=3;n<=10;n++)for(int k:new int[]{3,5,7,9}){final int q=n,kk=k;s.add(new Strategy("KNN","ComboKNN-"+n+"-k"+k,(a,e)->knnRare(a,e,q,kk)));}
         for(int cap:new int[]{2,3,4,5,6}){final int q=cap;s.add(new Strategy("Run","RunCombo-"+cap,(a,e)->runRare(a,e,q)));}
         for(int lag:new int[]{1,2,3,4,5,6,7,8,9,10,11,12}){final int q=lag;s.add(new Strategy("Lag","LagCombo-"+lag,(a,e)->lagRare(a,e,q)));}
         // META: 과거 최근구간에서 실제 제외 실패(actual==excluded)가 가장 적었던 핵심 규칙을 매 시점 새로 선택한다.
-        for(int lb:new int[]{12,20,32}){final int q=lb;s.add(new Strategy("Meta","META80-BestRecent-"+lb,(a,e)->metaBestRecent(a,e,q)));}
+        for(int lb:new int[]{12,20,30}){final int q=lb;s.add(new Strategy("Meta","META80-BestRecent-"+lb,(a,e)->metaBestRecent(a,e,q)));}
         return s;
     }
 
@@ -264,9 +270,9 @@ public final class TriPick80Engine {
 
     private static List<Strategy> metaCoreStrategies(){
         List<Strategy> s=new ArrayList<>();
-        for(int w:new int[]{6,10,16,24,40,60}){final int q=w;s.add(new Strategy("Recent","R"+w,(a,e)->recentRare(a,e,q)));}
+        for(int w:new int[]{6,10,16,24,30}){final int q=w;s.add(new Strategy("Recent","R"+w,(a,e)->recentRare(a,e,q)));}
         for(int o:new int[]{1,2,3}){final int q=o;s.add(new Strategy("Markov","M"+o,(a,e)->markovRare(a,e,q)));}
-        for(int w:new int[]{20,40,60}){final int q=w;s.add(new Strategy("Transition","T"+w,(a,e)->transitionRare(a,e,q)));}
+        for(int w:new int[]{12,20,30}){final int q=w;s.add(new Strategy("Transition","T"+w,(a,e)->transitionRare(a,e,q)));}
         for(int n:new int[]{4,6,8}){final int q=n;s.add(new Strategy("Shape","S"+n,(a,e)->shapeRare(a,e,q,1)));}
         for(int lag:new int[]{1,2,3,5}){final int q=lag;s.add(new Strategy("Lag","L"+lag,(a,e)->lagRare(a,e,q)));}
         return s;

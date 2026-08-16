@@ -18,5 +18,5 @@ jobs:
       - run: gradle assembleDebug
       - uses: actions/upload-artifact@v4
         with:
-          name: BubbleFilterBest1V18-debug-apk
+          name: BubbleTriPick80V17-30FIX-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
